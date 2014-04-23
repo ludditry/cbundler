@@ -74,9 +74,10 @@ while read repo branch; do
     # make check
     make DESTDIR=${DESTDIR} install
 
+    popd
+
     # whack the .la files
     find ${DESTDIR} -name "*la" -exec rm {} \;
-
 done < <( grep -v "^#" ${PROFILE}/manifest.txt )
 
 rm -rf "${DESTDIR}/etc"
