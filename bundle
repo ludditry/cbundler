@@ -9,10 +9,9 @@ function on_exit() {
     [ -e ${TEMPDIR} ] && rm -rf ${TEMPDIR}
 }
 
-ROOT_PATH=/usr/local/bundler
-REMOVE_PURGE=0
-INSTALL_OVERWRITE=0
+ROOT_PATH=/opt/bundler
 RESTART_SERVICES=1
+FORCE=0
 TEMPDIR=$(mktemp -d --tmpdir bundle-XXXXXX)
 
 trap on_exit exit
@@ -22,18 +21,20 @@ function log() {
 }
 
 function usage() {
-    echo "bundler [args] <action> <bundle name | file>"
+    echo "bundler [args] <action> <action args>"
     echo
     echo "Valid Options:"
     echo " -h               help"
+    echo " -f               force overwrite or removal of files"
     echo " -r <path>        root path to install/uninstall to/from"
     echo
     echo "Valid Actions:"
-    echo " install             install a bundle file"
-    echo " uninstall           uninstall a bundle name"
-    echo " upgrade             install and set a bundle active"
-    echo " list                list bundles"
-    echo " list <bundle name>  list installed version of bundle"
+    echo " install                       install a bundle file"
+    echo " uninstall                     uninstall a bundle name"
+    echo " upgrade                       install and set a bundle active"
+    echo " activate <bundle> <version>   activate a bundle version"
+    echo " list                          list bundles"
+    echo " list <bundle name>            list installed version of bundle"
 }
 
 function bundle_from_file() {
@@ -83,6 +84,39 @@ function bundle_installed() {
     return 1
 }
 
+function is_current_version() {
+    # $1 bundle name
+    # $2 bundle version
+
+    local bundle_name="$1"
+    local bundle_version="$2"
+    local current_version=$(find_current_bundle_version "${bundle_name}")
+
+    if [ "${current_version}" = "${bundle_version}" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+function find_current_bundle_version() {
+    # $1 bundle name
+    local bundle_name=$1
+    local bundle_version="unknown"
+
+    if ! bundle_installed "${bundle_name}"; then
+        echo "Bundle not installed"
+        exit 1
+    fi
+
+    if [ -L "${ROOT_PATH}/${bundle_name}/current" ]; then
+        bundle_version=$(version_from_file $(readlink -f "${ROOT_PATH}/${bundle_name}/current"))
+    fi
+
+    echo "${bundle_version}"
+}
+
+
 function find_basedir() {
     # $1 bundle name
     # $2 bundle version
@@ -122,7 +156,7 @@ function bundle_remove_unchanged_templated_files() {
                 local old_md5=$(md5sum "${TEMPDIR}/xfile" | awk '{ print $1 }')
                 local new_md5=$(md5sum "${dest_dir}/${xfile}" | awk '{ print $1 }')
 
-                if [ "${old_md5}" == "${new_md5}" ]; then
+                if [ $FORCE -eq 1 ] || [ "${old_md5}" == "${new_md5}" ]; then
                     log " - Removing '${xfile}'"                    
                     rm -f "${TEMPDIR}/xfile" "${dest_dir}/${xfile}"
                 else
@@ -213,7 +247,7 @@ function bundle_install_templated_files() {
         for xfile in $(find . -type f); do
             xfile=$(echo "${xfile}" | cut -c3-)
 
-            if [ ! -e "${dest_dir}/${xfile}" ]; then
+            if [ $FORCE -eq 1 ] || [ ! -e "${dest_dir}/${xfile}" ]; then
                 log " - Installing '${xfile}'"
                 template_copy "${bundle_name}" "${bundle_version}" "${relative_dir}/${xfile}" "${TEMPDIR}/xfile"
                 mkdir -p $(dirname "${dest_dir}/${xfile}")
@@ -263,6 +297,53 @@ function bundle_install_binlinks() {
     done
 }
 
+function bundle_deactivate() {
+    # $1 bundle_name
+    # $2 bundle_verson
+
+    local bundle_name="$1"
+    local bundle_version="$2"
+
+    if bundle_installed "${bundle_name}"; then
+        if is_current_version "${bundle_name}" "${bundle_version}"; then
+            if [ ${RESTART_SERVICES} -eq 1 ]; then
+                bundle_stop "${bundle_name}" "${bundle_version}"
+            fi
+            bundle_remove_init "${bundle_name}" "${bundle_version}"
+            bundle_remove_etc "${bundle_name}" "${bundle_version}"
+            bundle_remove_binlinks "${bundle_name}" "${bundle_version}"
+        fi
+    fi
+}
+
+
+function bundle_deactivate_current() {
+    # $1 bundle_name
+    
+    local bundle_name="$1"
+    local bundle_version=$(find_current_bundle_version "${bundle_name}")
+
+    if [ "${bundle_version}" != "unknown" ]; then
+        bundle_deactivate "${bundle_name}" "${bundle_version}"
+    fi
+}
+
+function bundle_activate() {
+    # $1 bundle name
+    # $2 bundle version
+
+    local bundle_name="$1"
+    local bundle_version="$2"
+
+    bundle_install_init "${bundle_name}" "${bundle_version}"
+    bundle_install_etc "${bundle_name}" "${bundle_version}"
+    bundle_install_binlinks "${bundle_name}" "${bundle_version}"
+
+    if [ ${RESTART_SERVICES} -eq 1 ]; then
+        bundle_start "${bundle_name}" "${bundle_version}"
+    fi
+}
+
 function install_bundle_from_file() {
     # $1 file_name
     local file_name=$1
@@ -273,33 +354,32 @@ function install_bundle_from_file() {
     bundle_name=$(bundle_from_file "${file_name}")
     bundle_version=$(version_from_file "${file_name}")
 
-    # stop services if necessary
-    if bundle_installed "${bundle_name}"; then
-        if [ ${RESTART_SERVICES} -eq 1 ]; then
-            bundle_stop_current "${bundle_name}"
-        fi
-        bundle_remove_etc "${bundle_name}" "current"
-        bundle_remove_init "${bundle_name}" "current"
-        bundle_remove_binlinks "${bundle_name}" "current"
-    fi
+    # uninstall old
+    bundle_deactivate_current "${bundle_name}"
 
     # unarchive the new bundle
     log "Extracting bundle"
     mkdir -p "${ROOT_PATH}/${bundle_name}"
     tar -C "${ROOT_PATH}/${bundle_name}" -xzf "${file_name}" > /dev/null 2>&1
 
+    
     # move current
-    rm -f "${ROOT_PATH}/${bundle_name}/current"
-    ln -s "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}" "${ROOT_PATH}/${bundle_name}/current"
+    bundle_set_current "${bundle_name}" "${bundle_version}"
 
     bundle_rpathize "${bundle_name}" "current"
-    bundle_install_init "${bundle_name}" "current"
-    bundle_install_etc "${bundle_name}" "current"
-    bundle_install_binlinks "${bundle_name}" "current"
 
-    if [ ${RESTART_SERVICES} -eq 1 ]; then
-        bundle_start_current "${bundle_name}"
-    fi
+    bundle_activate "${bundle_name}" "${bundle_version}"
+}
+
+function bundle_set_current() {
+    # $1 bundle name
+    # $2 bundle version
+
+    local bundle_name="$1"
+    local bundle_version="$2"
+    
+    rm -f "${ROOT_PATH}/${bundle_name}/current"
+    ln -s "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}" "${ROOT_PATH}/${bundle_name}/current"
 }
 
 function bundle_stop() {
@@ -352,17 +432,121 @@ function bundle_start_current() {
     bundle_start "${bundle_name}" "current"
 }
 
-function active_bundle() {
+function bundle_uninstall_version() {
     # $1 bundle name
+    # $2 bundle version
+
     local bundle_name=$1
+    local bundle_version=$2
+
+    if is_current_version "${bundle_name}" "${bundle_version}"; then
+        echo "Cannot uninstall current version.  Make another active first"
+        exit 1
+    fi
+
+    local basedir=$(find_basedir "${bundle_name}" "${bundle_version}")
+    if [ -d "${basedir}" ]; then
+        rm -rf "${basedir}" > /dev/null 2>&1
+    fi
+}
+
+
+function main_uninstall() {
+    # $1 bundle name
+    # $2 bundle version
+
+    local bundle_name="$1"
+    local bundle_version="${2:-}"
+
+    if ! bundle_installed "${bundle_name}"; then
+        echo "Bundle '${bundle_name}' not installed"
+        exit 1
+    fi
+
+    if [ "${bundle_version}" = "" ]; then
+        # uninstall entire bundle...
+        if [ ${FORCE} -ne 1 ]; then
+            echo "Cannot delete entire bundle without force (-f)"
+            exit 1
+        fi
+
+        echo "current is $(find_current_bundle_version ${bundle_name})"
+
+        bundle_deactivate_current "${bundle_name}"
+        rm -rf "${ROOT_PATH}/${bundle_name}"
+    else
+        if is_current_version "${bundle_name}" "${bundle_version}"; then
+            echo "Cannot uninstall current without deleting entire bundle"
+            exit 1
+        fi
+
+        local bundle_path=$(find_basedir "${bundle_name}" "${bundle_version}")
+        if [ ! -d "${bundle_path}" ]; then
+            echo "Bundle version does not exist"
+            exit 1
+        fi
+
+        rm -rf "${bundle_path}"
+    fi
 }
 
 function main_list() {
-    if [ ! -d ${ROOT_PATH} ]; then
-        echo "No bundles found"
+    # $1 maybe bundle name
+    local bundle_name=${1:-}
+
+    if [ "${bundle_name}" == "" ]; then
+        if [ ! -d ${ROOT_PATH} ]; then
+            echo "No bundles found"
+        else
+            echo "Installed bundles:"
+            for bundle in "${ROOT_PATH}"/*; do
+                bundle_name=$(basename "${bundle}")
+                echo " ${bundle_name} ($(find_current_bundle_version $(basename "${bundle}")))"
+            done
+        fi
     else
-        echo "Dir is there!"
+        if ! bundle_installed "${bundle_name}"; then
+            echo "Bundle '${bundle_name}' not installed"
+        else
+            echo "Installed versions:"
+
+            local current_version=$(find_current_bundle_version "${bundle_name}")
+
+            for bundle in "${ROOT_PATH}/${bundle_name}"/*; do
+                if [ "${bundle}" != "current" ]; then
+                    local bundle_verify=$(bundle_from_file "${bundle}")
+                    local bundle_version=$(version_from_file "${bundle}")
+
+                    if [ "${bundle_verify}" = "${bundle_name}" ]; then
+                        annotate=""
+                        if [ "${bundle_version}" = "${current_version}" ]; then
+                            annotate="*"
+                        fi
+                            
+                        echo " ${bundle_version} ${annotate}"
+                    fi
+                fi
+            done
+        fi
     fi
+}
+
+function main_activate() {
+    # $1 - bundle name
+    # $2 - bundle version
+
+    local bundle_name=${1:-}
+    local bundle_version=${2:-}
+
+    if [ -z "${bundle_name}" ] || [ -z "${bundle_version}" ]; then
+        echo "No bundle name, or no bundle version"
+        usage
+        exit 1
+    fi
+
+    bundle_deactivate_current "${bundle_name}"
+    bundle_set_current "${bundle_name}" "${bundle_version}"
+    bundle_activate "${bundle_name}" "${bundle_version}"
 }
 
 function main_install() {
@@ -377,7 +561,7 @@ function main_install() {
     install_bundle_from_file ${file_name}
 }
 
-while getopts "hr:" OPTION; do
+while getopts "hr:f" OPTION; do
     case ${OPTION} in
         h)
             usage
@@ -385,6 +569,9 @@ while getopts "hr:" OPTION; do
             ;;
         r)
             ROOT_PATH=${OPTARG}
+            ;;
+        f)
+            FORCE=1
             ;;
         ?)
             usage
@@ -395,10 +582,10 @@ done
 shift $(( OPTIND - 1 ))
 
 ACTION=${1:-help}
-ARG=${2:-}
+shift
 
 if type main_${ACTION,,} | grep -q "is a function"; then
-    main_${ACTION,,} $ARG
+    main_${ACTION,,} "$@"
 else
     echo "Invalid action: ${ACTION}"
 fi
