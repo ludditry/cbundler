@@ -1,0 +1,406 @@
+#!/bin/bash
+
+set -e
+set -u
+
+shopt -s nullglob
+
+function on_exit() {
+    [ -e ${TEMPDIR} ] && rm -rf ${TEMPDIR}
+}
+
+ROOT_PATH=/usr/local/bundler
+REMOVE_PURGE=0
+INSTALL_OVERWRITE=0
+RESTART_SERVICES=1
+TEMPDIR=$(mktemp -d --tmpdir bundle-XXXXXX)
+
+trap on_exit exit
+
+function log() {
+    echo "$@" >&2
+}
+
+function usage() {
+    echo "bundler [args] <action> <bundle name | file>"
+    echo
+    echo "Valid Options:"
+    echo " -h               help"
+    echo " -r <path>        root path to install/uninstall to/from"
+    echo
+    echo "Valid Actions:"
+    echo " install             install a bundle file"
+    echo " uninstall           uninstall a bundle name"
+    echo " upgrade             install and set a bundle active"
+    echo " list                list bundles"
+    echo " list <bundle name>  list installed version of bundle"
+}
+
+function bundle_from_file() {
+    # $1 - file name
+    local file_name=$(basename "$1")
+    local bundle_name
+
+    bundle_name="${file_name%-*}"
+    echo "${bundle_name}"
+}
+
+function version_from_file() {
+    # $1 - file name
+    local file_name=$(basename "$1")
+    local bundle_version
+    local bundle_name=$(bundle_from_file "${file_name}")
+
+    bundle_version=$(basename "${file_name#${bundle_name}-}" .tar.gz)
+    echo ${bundle_version}
+}
+
+function template_copy() {
+    # $1 bundle name
+    # $2 bundle version
+    # $3 relative path
+    # $4 destination path
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local relative_path=$3
+    local destination_path=$4
+
+    local base_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    cp "${base_dir}/${relative_path}" "${destination_path}"
+    sed -i "${destination_path}" -e "s~@BUNDLE_BIN@~${base_dir}/bin~"
+}
+
+function bundle_installed() {
+    # $1 bundle name
+    local bundle_name=$1
+
+    if [ -L "${ROOT_PATH}/${bundle_name}/current" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+function find_basedir() {
+    # $1 bundle name
+    # $2 bundle version
+
+    local bundle_name=$1
+    local bundle_version=$2
+
+    if [ "${bundle_version}" == "current" ]; then
+        echo "${ROOT_PATH}/${bundle_name}/current"
+    else
+        echo "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}"
+    fi
+}
+
+function bundle_remove_unchanged_templated_files() {
+    # $1 - bundle name
+    # $2 - version
+    # $3 - relative dir
+    # $4 - dest dir
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local relative_dir=$3
+    local dest_dir=$4
+
+    local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    if [ -d "${bundle_dir}/${relative_dir}" ]; then
+        log "Removing unchanged files in ${dest_dir} for ${bundle_name} (${bundle_version})"
+
+        pushd "${bundle_dir}/${relative_dir}" > /dev/null 2>&1
+        for xfile in $(find . -type f); do
+            xfile=$(echo "${xfile}" | cut -c3-)
+
+            if [ -e "${dest_dir}/${xfile}" ]; then
+                template_copy "${bundle_name}" "${bundle_version}" "${relative_dir}/${xfile}" "${TEMPDIR}/xfile"
+                local old_md5=$(md5sum "${TEMPDIR}/xfile" | awk '{ print $1 }')
+                local new_md5=$(md5sum "${dest_dir}/${xfile}" | awk '{ print $1 }')
+
+                if [ "${old_md5}" == "${new_md5}" ]; then
+                    log " - Removing '${xfile}'"                    
+                    rm -f "${TEMPDIR}/xfile" "${dest_dir}/${xfile}"
+                else
+                    log " - Keeping locally modified file '${dest_dir}/${xfile}'"
+                fi
+            fi
+        done
+        popd > /dev/null 2>&1
+    else
+        log "No files to remove in ${dest_dir} for ${bundle_name} (${bundle_version})"
+    fi
+}
+
+function bundle_remove_etc() {
+    # $1 - bundle name
+    # $2 - version
+
+    local bundle_name=$1
+    local bundle_version=$2
+
+    bundle_remove_unchanged_templated_files "$1" "$2" "etc" "/etc"
+}
+
+function bundle_remove_init() {
+    # $1 - bundle name
+    # $2 - version
+    
+    local bundle_name=$1
+    local bundle_version=$2
+
+    bundle_remove_unchanged_templated_files "$1" "$2" "init" "/etc/init.d"
+}
+
+function bundle_remove_binlinks() {
+    # $1 - bundle name
+    # $2 - version
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    log "Removing symlinked binfiles"
+
+    for file in "${bundle_dir}"/bin/*; do
+        if [ -x "${file}" ]; then
+            if [ -L "/bin/$(basename ${file})" ]; then
+                log " - $(basename ${file})"
+                rm "/bin/$(basename ${file})"
+            fi
+        fi
+    done
+}
+
+function bundle_rpathize() {
+    # $1 - bundle name
+    # $2 - version
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    log "Performing rpath fixups"
+    for file in "${bundle_dir}"/bin/*; do
+        if $(file -b ${file} | grep -q "ELF" > /dev/null 2>&1); then
+            log " - Fixing $(basename ${file})"
+            patchelf --set-rpath "${bundle_dir}/lib" "${file}"
+        fi
+    done
+}
+
+function bundle_install_templated_files() {
+    # $1 - bundle name
+    # $2 - version
+    # $3 - relative dir
+    # $4 - dest dir
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local relative_dir=$3
+    local dest_dir=$4
+
+    local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    if [ -d "${bundle_dir}/${relative_dir}" ]; then
+        log "Installing files in ${dest_dir} for ${bundle_name} (${bundle_version})"
+
+        pushd "${bundle_dir}/${relative_dir}" > /dev/null 2>&1
+        for xfile in $(find . -type f); do
+            xfile=$(echo "${xfile}" | cut -c3-)
+
+            if [ ! -e "${dest_dir}/${xfile}" ]; then
+                log " - Installing '${xfile}'"
+                template_copy "${bundle_name}" "${bundle_version}" "${relative_dir}/${xfile}" "${TEMPDIR}/xfile"
+                mkdir -p $(dirname "${dest_dir}/${xfile}")
+                cp "${TEMPDIR}/xfile" "${dest_dir}/${xfile}"
+            else
+                log " - Skipping '${xfile}'"
+            fi
+        done
+        popd > /dev/null 2>&1
+    else
+        log "No files to install in ${dest_dir} for ${bundle_name} (${bundle_version})"
+    fi
+}
+
+function bundle_install_etc() {
+    # $1 - bundle name
+    # $2 - version
+
+    bundle_install_templated_files "$1" "$2" "etc" "/etc"
+}
+
+function bundle_install_init() {
+    # $1 - bundle name
+    # $2 - version
+ 
+    bundle_install_templated_files "$1" "$2" "init" "/etc/init.d"
+}
+
+function bundle_install_binlinks() {
+    # $1 - bundle name
+    # $2 - version
+
+    local bundle_name=$1
+    local bundle_version=$2
+    local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+
+    log "Installing symlinked binfiles"
+
+    for file in "${bundle_dir}"/bin/*; do
+        if [ -x "${file}" ]; then
+            local destfile="/bin/$(basename ${file})"
+
+            log " - ${file} -> ${destfile}"
+            rm -f "${destfile}"
+            ln -s "${file}" "${destfile}"
+        fi
+    done
+}
+
+function install_bundle_from_file() {
+    # $1 file_name
+    local file_name=$1
+
+    local bundle_name
+    local bundle_version
+
+    bundle_name=$(bundle_from_file "${file_name}")
+    bundle_version=$(version_from_file "${file_name}")
+
+    # stop services if necessary
+    if bundle_installed "${bundle_name}"; then
+        if [ ${RESTART_SERVICES} -eq 1 ]; then
+            bundle_stop_current "${bundle_name}"
+        fi
+        bundle_remove_etc "${bundle_name}" "current"
+        bundle_remove_init "${bundle_name}" "current"
+        bundle_remove_binlinks "${bundle_name}" "current"
+    fi
+
+    # unarchive the new bundle
+    log "Extracting bundle"
+    mkdir -p "${ROOT_PATH}/${bundle_name}"
+    tar -C "${ROOT_PATH}/${bundle_name}" -xzf "${file_name}" > /dev/null 2>&1
+
+    # move current
+    rm -f "${ROOT_PATH}/${bundle_name}/current"
+    ln -s "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}" "${ROOT_PATH}/${bundle_name}/current"
+
+    bundle_rpathize "${bundle_name}" "current"
+    bundle_install_init "${bundle_name}" "current"
+    bundle_install_etc "${bundle_name}" "current"
+    bundle_install_binlinks "${bundle_name}" "current"
+
+    if [ ${RESTART_SERVICES} -eq 1 ]; then
+        bundle_start_current "${bundle_name}"
+    fi
+}
+
+function bundle_stop() {
+    # $1 bundle name
+    # $2 bundle version
+    local bundle_name=$1
+    local bundle_version=$2
+    local bundle_path=$(find_basedir "${bundle_name}" "${bundle_version}")
+    local script
+
+    # try and kill, but don't freak if we can't
+    ls ${bundle_path}/init/*
+
+    set +e
+    for script in "${bundle_path}"/init/*; do
+        log " - Stopping service '${script}'"
+        service $(basename "${script}") stop
+    done
+    set -e
+}
+
+function bundle_stop_current() {
+    # $1 bundle name
+    local bundle_name=$1
+
+    bundle_stop "${bundle_name}" "current"
+}
+
+function bundle_start() {
+    # $1 bundle name
+    # $2 bundle version
+    local bundle_name=$1
+    local bundle_version=$2
+    local bundle_path=$(find_basedir "${bundle_name}" "${bundle_version}")
+    local script
+
+    # try and kill, but don't freak if we can't
+    set +e
+    for script in "${bundle_path}"/init/*; do
+        log " - Starting service '${script}'"
+        service $(basename "${script}") start
+    done
+    set -e
+}
+
+function bundle_start_current() {
+    # $1 bundle name
+    local bundle_name=$1
+
+    bundle_start "${bundle_name}" "current"
+}
+
+function active_bundle() {
+    # $1 bundle name
+    local bundle_name=$1
+}
+
+function main_list() {
+    if [ ! -d ${ROOT_PATH} ]; then
+        echo "No bundles found"
+    else
+        echo "Dir is there!"
+    fi
+}
+
+function main_install() {
+    # $1 - file name
+    local file_name=$1
+
+    bundle_name=$(bundle_from_file "$file_name")
+    bundle_version=$(version_from_file "$file_name")
+
+    echo "working with bundle ${bundle_name} version ${bundle_version}"
+
+    install_bundle_from_file ${file_name}
+}
+
+while getopts "hr:" OPTION; do
+    case ${OPTION} in
+        h)
+            usage
+            exit 0
+            ;;
+        r)
+            ROOT_PATH=${OPTARG}
+            ;;
+        ?)
+            usage
+            exit 1
+    esac
+done
+
+shift $(( OPTIND - 1 ))
+
+ACTION=${1:-help}
+ARG=${2:-}
+
+if type main_${ACTION,,} | grep -q "is a function"; then
+    main_${ACTION,,} $ARG
+else
+    echo "Invalid action: ${ACTION}"
+fi
+
+
