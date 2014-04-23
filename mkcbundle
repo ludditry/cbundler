@@ -41,7 +41,7 @@ while read repo branch; do
     DESTDIR=${TEMPDIR}/${profile}-${BUILD_NUMBER}
 
     ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
-    make
+    make V=1
     # make check
     make DESTDIR=${DESTDIR} install
 
