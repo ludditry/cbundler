@@ -39,10 +39,8 @@ if [ "${PROFILE}" = "" ]; then
     exit 1
 fi
 
-BASE_DIR=$(readlink -f $(dirname $0))
-
-if [ ! -f ${BASE_DIR}/${PROFILE}/manifest.txt ]; then
-    echo "Cannot find PROFILE: (${PROFILE}/manifest.txt missing)"
+if [ ! -f ${PROFILE}/manifest.txt ]; then
+    echo "Cannot find profile: (${PROFILE}/manifest.txt missing)"
     exit 1
 fi
 
@@ -79,13 +77,13 @@ while read repo branch; do
     # whack the .la files
     find ${DESTDIR} -name "*la" -exec rm {} \;
 
-done < <( grep -v "^#" ${BASE_DIR}/${PROFILE}/manifest.txt )
+done < <( grep -v "^#" ${PROFILE}/manifest.txt )
 
 rm -rf "${DESTDIR}/etc"
 rm -rf "${DESTDIR}/init"
 
-cp -a "${BASE_DIR}/${PROFILE}/etc" "${DESTDIR}"
-cp -a "${BASE_DIR}/${PROFILE}/init" "${DESTDIR}"
+cp -a "${PROFILE}/etc" "${DESTDIR}"
+cp -a "${PROFILE}/init" "${DESTDIR}"
 
-tar -C ${TEMPDIR} -czvf ${BASE_DIR}/${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
+tar -C ${TEMPDIR} -czvf ${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
 
