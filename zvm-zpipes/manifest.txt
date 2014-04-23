@@ -1,8 +1,0 @@
-# Repo config for zpipes
-https://github.com/zeromq/zeromq4-x master
-https://github.com/zeromq/czmq master
-https://github.com/zeromq/zyre master
-https://github.com/zeromq/zbroker master
-https://github.com/rpedde/zvm-zpipes master
-https://github.com/zerovm/validator master
-https://github.com/rpedde/zerovm zpipes

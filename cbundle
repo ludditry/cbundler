@@ -21,7 +21,7 @@ function log() {
 }
 
 function usage() {
-    echo "bundler [args] <action> <action args>"
+    echo "cbundle [args] <action> <action args>"
     echo
     echo "Valid Options:"
     echo " -h               help"

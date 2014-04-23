@@ -1,17 +1,49 @@
 #!/bin/bash
 
 set -e
+set -u
 
 function on_exit() {
     [ -e ${TEMPDIR} ] && rm -rf ${TEMPDIR}
 }
 
-BUILD_NUMBER=$(printf "%05d" ${BUILD_NUMBER:-$(date +%Y%m%d%H%M)})
-BASE_DIR=$(readlink -f $(dirname $0))
-profile=${1:-zvm-zpipes}
+function usage() {
+    echo "mkcbundle [args]"
+    echo
+    echo "Valid args:"
+    echo " -p <profile>    use a specific profile directory"
+    echo " -v <version>    use a specific version (default to date)"
+    echo
+}
 
-if [ ! -f ${BASE_DIR}/${profile}/manifest.txt ]; then
-    echo "Cannot find profile: (${profile}/manifest.txt missing)"
+
+PROFILE=""
+BUILD_NUMBER=$(date +%Y%m%d%H%M)
+
+while getops "p:v:" OPTION; do
+    case ${OPTION} in
+        p)
+            profile=${OPTARG}
+            ;;
+        v)
+            BUILD_NUMBER=${OPTARG}
+            ;;
+        ?)
+            usage
+            exit 1
+    esac
+done
+
+
+if [ "${PROFILE}" = "" ]; then
+    usage
+    exit 1
+fi
+
+BASE_DIR=$(readlink -f $(dirname $0))
+
+if [ ! -f ${BASE_DIR}/${PROFILE}/manifest.txt ]; then
+    echo "Cannot find PROFILE: (${PROFILE}/manifest.txt missing)"
     exit 1
 fi
 
@@ -19,7 +51,7 @@ TEMPDIR=$(mktemp -d --tmpdir bundler-XXXXXXXXXXX)
 # trap on_exit exit
 
 OLD_PKG_CONFIG_PATH=${PKG_CONFIG_PATH}
-export PKG_CONFIG_PATH=${TEMPDIR}/${profile}-${BUILD_NUMBER}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
+export PKG_CONFIG_PATH=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
 
 while read repo branch; do
     project=$(basename ${repo})
@@ -38,7 +70,7 @@ while read repo branch; do
         autoreconf -fi
     fi
 
-    DESTDIR=${TEMPDIR}/${profile}-${BUILD_NUMBER}
+    DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
 
     ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
     make V=1
@@ -48,13 +80,13 @@ while read repo branch; do
     # whack the .la files
     find ${DESTDIR} -name "*la" -exec rm {} \;
 
-done < <( grep -v "^#" ${BASE_DIR}/${profile}/manifest.txt )
+done < <( grep -v "^#" ${BASE_DIR}/${PROFILE}/manifest.txt )
 
 rm -rf "${DESTDIR}/etc"
 rm -rf "${DESTDIR}/init"
 
-cp -a "${BASE_DIR}/${profile}/etc" "${DESTDIR}"
-cp -a "${BASE_DIR}/${profile}/init" "${DESTDIR}"
+cp -a "${BASE_DIR}/${PROFILE}/etc" "${DESTDIR}"
+cp -a "${BASE_DIR}/${PROFILE}/init" "${DESTDIR}"
 
-tar -C ${TEMPDIR} -czvf ${BASE_DIR}/${profile}-${BUILD_NUMBER}.tar.gz ${profile}-${BUILD_NUMBER}
+tar -C ${TEMPDIR} -czvf ${BASE_DIR}/${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
 
