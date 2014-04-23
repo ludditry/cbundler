@@ -4,8 +4,8 @@ VER=$(shell cat VERSION)
 all:
 
 install:
-	cp mkcbundle $(DESTDIR)/usr/bin
-	cp cbundle $(DESTDIR)/usr/bin
+	install -D mkcbundle $(DESTDIR)/usr/bin
+	install -D cbundle $(DESTDIR)/usr/bin
 
 dist:
 	mkdir $(PROJECT)-$(VER)
