@@ -75,7 +75,7 @@ while read repo branch; do
     make DESTDIR=${DESTDIR} install
 
     VER=$(git rev-parse HEAD)
-    echo "${project} ${VER}" >> ${DESTDIR}/versions.txt
+    echo "${project} ${repo}@${branch} (${VER})" >> ${DESTDIR}/versions.txt
 
     popd
 
