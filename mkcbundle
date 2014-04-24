@@ -69,6 +69,9 @@ while read repo branch; do
 
     DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
 
+    VER=$(git rev-parse HEAD)
+    echo "${project} ${VER}" >> ${DESTDIR}/versions.txt
+
     ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
     make V=1
     # make check
