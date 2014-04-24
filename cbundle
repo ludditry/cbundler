@@ -218,12 +218,14 @@ function bundle_rpathize() {
     local bundle_version=$2
     local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
 
-    log "Performing rpath fixups"
-    for file in "${bundle_dir}"/bin/*; do
-        if $(file -b ${file} | grep -q "ELF" > /dev/null 2>&1); then
-            log " - Fixing $(basename ${file})"
-            patchelf --set-rpath "${bundle_dir}/lib" "${file}"
-        fi
+    for dir in bin lib; do
+        log "Performing rpath fixups in /${dir}"
+        for file in "${bundle_dir}"/${dir}/*; do
+            if $(file -b ${file} | grep -q "ELF" > /dev/null 2>&1); then
+                log " - Fixing $(basename ${file})"
+                patchelf --set-rpath "${bundle_dir}/lib" "${file}"
+            fi
+        done
     done
 }
 
