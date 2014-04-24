@@ -346,7 +346,7 @@ function bundle_activate() {
 
 function install_bundle_from_file() {
     # $1 file_name
-    local file_name=$1
+    local file_name="$1"
 
     local bundle_name
     local bundle_version
@@ -355,7 +355,9 @@ function install_bundle_from_file() {
     bundle_version=$(version_from_file "${file_name}")
 
     # uninstall old
-    bundle_deactivate_current "${bundle_name}"
+    if bundle_installed "${bundle_name}"; then
+        bundle_deactivate_current "${bundle_name}"
+    fi
 
     # unarchive the new bundle
     log "Extracting bundle"
@@ -366,8 +368,8 @@ function install_bundle_from_file() {
     # move current
     bundle_set_current "${bundle_name}" "${bundle_version}"
 
+    # fix up and go
     bundle_rpathize "${bundle_name}" "current"
-
     bundle_activate "${bundle_name}" "${bundle_version}"
 }
 
@@ -391,7 +393,7 @@ function bundle_stop() {
     local script
 
     # try and kill, but don't freak if we can't
-    ls ${bundle_path}/init/*
+    # ls ${bundle_path}/init/*
 
     set +e
     for script in "${bundle_path}"/init/*; do
@@ -469,8 +471,6 @@ function main_uninstall() {
             echo "Cannot delete entire bundle without force (-f)"
             exit 1
         fi
-
-        echo "current is $(find_current_bundle_version ${bundle_name})"
 
         bundle_deactivate_current "${bundle_name}"
         rm -rf "${ROOT_PATH}/${bundle_name}"
@@ -554,16 +554,18 @@ function main_install() {
     local file_name=$1
 
     # if it is a http url, pull the file using wget
-    if [[ ${file_name} == "http://*" ]] || [[ ${file_name} == "ftp://*" ]]; then
+    if [[ "${file_name}" =~ "http://" ]] || [[ "${file_name}" =~ "ftp://" ]]; then
         # pull the file down
         local outfile=${TEMPDIR}/$(basename "${file_name}")
-        wget "${file_name}" -q -o "${outfile}"
+        wget "${file_name}" -q -O "${outfile}"
         file_name=${outfile}
 
         if [ ! -f "${file_name}" ]; then
             echo "Could not download file"
             exit 1
         fi
+
+        echo "Downloaded files"
     fi
 
     bundle_name=$(bundle_from_file "$file_name")
