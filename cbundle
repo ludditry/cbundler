@@ -601,7 +601,7 @@ shift $(( OPTIND - 1 ))
 ACTION=${1:-help}
 shift
 
-if type main_${ACTION,,} | grep -q "is a function"; then
+if ( type main_${ACTION,,} | grep -q "is a function" ); then
     main_${ACTION,,} "$@"
 else
     echo "Invalid action: ${ACTION}"
