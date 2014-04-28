@@ -53,6 +53,7 @@ function version_from_file() {
     local bundle_name=$(bundle_from_file "${file_name}")
 
     bundle_version=$(basename "${file_name#${bundle_name}-}" .tar.gz)
+
     echo ${bundle_version}
 }
 
@@ -116,16 +117,22 @@ function find_current_bundle_version() {
     echo "${bundle_version}"
 }
 
-
 function find_basedir() {
     # $1 bundle name
     # $2 bundle version
 
     local bundle_name=$1
     local bundle_version=$2
+    local real_version
 
     if [ "${bundle_version}" == "current" ]; then
-        echo "${ROOT_PATH}/${bundle_name}/current"
+        real_version=$(find_current_bundle_version "${bundle_name}")
+        if [ ${real_version} == "unknown" ]; then
+            echo "No 'current' symlink'"
+            exit 1
+        fi
+
+        echo "${ROOT_PATH}/${bundle_name}/${bundle_name}-${real_version}"
     else
         echo "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}"
     fi
