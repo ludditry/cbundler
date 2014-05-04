@@ -47,8 +47,10 @@ fi
 TEMPDIR=$(mktemp -d --tmpdir bundler-XXXXXXXXXXX)
 # trap on_exit exit
 
+DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
 OLD_PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}
-export PKG_CONFIG_PATH=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
+export PKG_CONFIG_PATH=${DESTDIR}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
+PATH=${DESTDIR}/bin:${PATH}
 
 while read repo branch; do
     project=$(basename ${repo})
@@ -56,23 +58,31 @@ while read repo branch; do
     echo "Building ${project}"
     echo -e "######################################################\n"
 
+    build_script=''
+
+    if [ -f ${PROFILE}/build/${project}.build ]; then
+        build_script=$(readlink -f ${PROFILE}/build/${project}.build)
+    fi
+
     git clone ${repo} ${TEMPDIR}/${project}
     pushd ${TEMPDIR}/${project}
 
     git checkout ${branch}
 
-    if [ -x autogen.sh ]; then 
-        ./autogen.sh
+    if [ "${build_script}" != "" ]; then
+        source "${build_script}"
     else
-        autoreconf -fi
+        if [ -x autogen.sh ]; then 
+            ./autogen.sh
+        else
+            autoreconf -fi
+        fi
+        
+        ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
+        make V=1
+        # make check
+        make DESTDIR=${DESTDIR} install
     fi
-
-    DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
-
-    ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
-    make V=1
-    # make check
-    make DESTDIR=${DESTDIR} install
 
     VER=$(git rev-parse HEAD)
     echo "${project} ${repo}@${branch} (${VER})" >> ${DESTDIR}/versions.txt
