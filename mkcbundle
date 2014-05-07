@@ -96,8 +96,8 @@ done < <( grep -v "^#" ${PROFILE}/manifest.txt )
 rm -rf "${DESTDIR}/etc"
 rm -rf "${DESTDIR}/init"
 
-cp -a "${PROFILE}/etc" "${DESTDIR}"
-cp -a "${PROFILE}/init" "${DESTDIR}"
+[ -d "${PROFILE}/etc" ] && cp -a "${PROFILE}/etc" "${DESTDIR}"
+[ -d "${PROFILE}/init" ] && cp -a "${PROFILE}/init" "${DESTDIR}"
 
 tar -C ${TEMPDIR} -czvf ${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
 
