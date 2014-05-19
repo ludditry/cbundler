@@ -164,7 +164,7 @@ function bundle_remove_unchanged_templated_files() {
                 local new_md5=$(md5sum "${dest_dir}/${xfile}" | awk '{ print $1 }')
 
                 if [ $FORCE -eq 1 ] || [ "${old_md5}" == "${new_md5}" ]; then
-                    log " - Removing '${xfile}'"                    
+                    log " - Removing '${xfile}'"
                     rm -f "${TEMPDIR}/xfile" "${dest_dir}/${xfile}"
                 else
                     log " - Keeping locally modified file '${dest_dir}/${xfile}'"
@@ -190,7 +190,7 @@ function bundle_remove_etc() {
 function bundle_remove_init() {
     # $1 - bundle name
     # $2 - version
-    
+
     local bundle_name=$1
     local bundle_version=$2
 
@@ -281,7 +281,7 @@ function bundle_install_etc() {
 function bundle_install_init() {
     # $1 - bundle name
     # $2 - version
- 
+
     bundle_install_templated_files "$1" "$2" "init" "/etc/init.d"
 }
 
@@ -328,7 +328,7 @@ function bundle_deactivate() {
 
 function bundle_deactivate_current() {
     # $1 bundle_name
-    
+
     local bundle_name="$1"
     local bundle_version=$(find_current_bundle_version "${bundle_name}")
 
@@ -373,7 +373,7 @@ function install_bundle_from_file() {
     mkdir -p "${ROOT_PATH}/${bundle_name}"
     tar -C "${ROOT_PATH}/${bundle_name}" -xzf "${file_name}" > /dev/null 2>&1
 
-    
+
     # move current
     bundle_set_current "${bundle_name}" "${bundle_version}"
 
@@ -388,7 +388,7 @@ function bundle_set_current() {
 
     local bundle_name="$1"
     local bundle_version="$2"
-    
+
     rm -f "${ROOT_PATH}/${bundle_name}/current"
     ln -s "${ROOT_PATH}/${bundle_name}/${bundle_name}-${bundle_version}" "${ROOT_PATH}/${bundle_name}/current"
 }
@@ -430,7 +430,7 @@ function bundle_start() {
     # try and kill, but don't freak if we can't
     set +e
     for script in "${bundle_path}"/init/*; do
-        log " - Starting service '${script}'"
+        log " - Starting service '$(basename ${script})'"
         service $(basename "${script}") start
     done
     set -e
@@ -531,7 +531,7 @@ function main_list() {
                         if [ "${bundle_version}" = "${current_version}" ]; then
                             annotate="*"
                         fi
-                            
+
                         echo " ${bundle_version} ${annotate}"
                     fi
                 fi
@@ -613,5 +613,3 @@ if ( type main_${ACTION,,} | grep -q "is a function" ); then
 else
     echo "Invalid action: ${ACTION}"
 fi
-
-
