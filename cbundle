@@ -11,6 +11,7 @@ function on_exit() {
 
 ROOT_PATH=/opt/bundler
 RESTART_SERVICES=1
+COPY_FILES=1
 FORCE=0
 TEMPDIR=$(mktemp -d --tmpdir bundle-XXXXXX)
 
@@ -27,9 +28,10 @@ function usage() {
     echo " -h               help"
     echo " -f               force overwrite or removal of files"
     echo " -r <path>        root path to install/uninstall to/from"
+    echo " -q               quick install - install without activating"
     echo
     echo "Valid Actions:"
-    echo " install                       install a bundle file"
+    echo " install                       install and activate a bundle file"
     echo " uninstall                     uninstall a bundle name"
     echo " upgrade                       install and set a bundle active"
     echo " activate <bundle> <version>   activate a bundle version"
@@ -365,7 +367,9 @@ function install_bundle_from_file() {
 
     # uninstall old
     if bundle_installed "${bundle_name}"; then
-        bundle_deactivate_current "${bundle_name}"
+        if [ "${COPY_FILES}" -eq 1 ]; then
+            bundle_deactivate_current "${bundle_name}"
+        fi
     fi
 
     # unarchive the new bundle
@@ -379,7 +383,9 @@ function install_bundle_from_file() {
 
     # fix up and go
     bundle_rpathize "${bundle_name}" "current"
-    bundle_activate "${bundle_name}" "${bundle_version}"
+    if [ "${COPY_FILES}" -eq 1 ]; then
+        bundle_activate "${bundle_name}" "${bundle_version}"
+    fi
 }
 
 function bundle_set_current() {
@@ -585,11 +591,14 @@ function main_install() {
     install_bundle_from_file ${file_name}
 }
 
-while getopts "hr:f" OPTION; do
+while getopts "hr:fq" OPTION; do
     case ${OPTION} in
         h)
             usage
             exit 0
+            ;;
+        q)
+            COPY_FILES=0
             ;;
         r)
             ROOT_PATH=${OPTARG}
