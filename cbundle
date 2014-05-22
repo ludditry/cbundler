@@ -243,11 +243,13 @@ function bundle_install_templated_files() {
     # $2 - version
     # $3 - relative dir
     # $4 - dest dir
+    # $5 - mode (or empty)
 
     local bundle_name=$1
     local bundle_version=$2
     local relative_dir=$3
     local dest_dir=$4
+    local mode=${5:-}
 
     local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
 
@@ -263,6 +265,9 @@ function bundle_install_templated_files() {
                 template_copy "${bundle_name}" "${bundle_version}" "${relative_dir}/${xfile}" "${TEMPDIR}/xfile"
                 mkdir -p $(dirname "${dest_dir}/${xfile}")
                 cp "${TEMPDIR}/xfile" "${dest_dir}/${xfile}"
+                if [ "${mode}" != "" ]; then
+                    chmod "${mode}" "${dest_dir}/${xfile}"
+                fi
             else
                 log " - Skipping '${xfile}'"
             fi
@@ -284,7 +289,7 @@ function bundle_install_init() {
     # $1 - bundle name
     # $2 - version
 
-    bundle_install_templated_files "$1" "$2" "init" "/etc/init.d"
+    bundle_install_templated_files "$1" "$2" "init" "/etc/init.d" "0755"
 }
 
 function bundle_install_binlinks() {
