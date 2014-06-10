@@ -16,6 +16,24 @@ function usage() {
     echo
 }
 
+function get_sha_for_checkout() {
+    # $1 - repo
+    # $2 - branch
+
+    local repo=$1
+    local branch=$2
+
+    if [ ${#branch} -eq 40 ]; then
+        echo ${branch}
+        return
+    fi
+
+    declare -a sha_info
+    sha_info=( $(git ls-remote ${repo} | egrep "refs/[^/]*/${branch}$") )
+    sha=${sha_info[0]}
+    echo ${sha}
+}
+
 
 PROFILE=""
 BUILD_NUMBER=$(date +%Y%m%d%H%M)
@@ -45,9 +63,13 @@ if [ ! -f ${PROFILE}/manifest.txt ]; then
 fi
 
 TEMPDIR=$(mktemp -d --tmpdir bundler-XXXXXXXXXXX)
-# trap on_exit exit
+trap on_exit exit
+
+mkdir -p .cache
+CACHE_ROOT=$(readlink -f .cache)
 
 DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
+mkdir -p ${DESTDIR}
 OLD_PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}
 export PKG_CONFIG_PATH=${DESTDIR}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
 PATH=${DESTDIR}/bin:${PATH}
@@ -58,36 +80,60 @@ while read repo branch; do
     echo "Building ${project}"
     echo -e "######################################################\n"
 
-    build_script=''
 
-    if [ -f ${PROFILE}/build/${project}.build ]; then
-        build_script=$(readlink -f ${PROFILE}/build/${project}.build)
+    CACHEDIR=${CACHE_ROOT}/${project}
+    cached_project_version=0
+
+    if [ -e ${CACHEDIR}/${project}-version.txt ]; then
+        cached_project_version=$(cat ${CACHEDIR}/${project}-version.txt)
     fi
 
-    git clone ${repo} ${TEMPDIR}/${project}
-    pushd ${TEMPDIR}/${project}
+    project_version=$(get_sha_for_checkout "${repo}" "${branch}")
 
-    git checkout ${branch}
+    if [ "${project_version}" == "" ]; then
+        echo "can't get sha for ${repo}@${branch}"
+        exit 1
+    fi
 
-    if [ "${build_script}" != "" ]; then
-        source "${build_script}"
-    else
-        if [ -x autogen.sh ]; then 
-            ./autogen.sh
-        else
-            autoreconf -fi
+    if [ "${project_version}" != "${cached_project_version}" ]; then
+        rm -rf ${CACHEDIR}
+        mkdir -p ${CACHEDIR}
+
+        # checkout
+        build_script=''
+        if [ -f ${PROFILE}/build/${project}.build ]; then
+            build_script=$(readlink -f ${PROFILE}/build/${project}.build)
         fi
-        
-        ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
-        make V=1
-        # make check
-        make DESTDIR=${DESTDIR} install
+
+        git clone ${repo} ${TEMPDIR}/${project}
+        pushd ${TEMPDIR}/${project}
+        git checkout ${project_version}
+
+        # build and stage into cache dir
+        if [ "${build_script}" != "" ]; then
+            source "${build_script}"
+        else
+            if [ -x autogen.sh ]; then
+                ./autogen.sh
+            else
+                autoreconf -fi
+            fi
+
+            ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
+            make V=1
+            # make check
+            make DESTDIR=${DESTDIR} install
+            make DESTDIR=${CACHEDIR} install
+
+            echo ${project_version} > ${CACHEDIR}/${project}-version.txt
+        fi
+        popd
+    else
+        # have a cached copy...
+        cp -a "${CACHEDIR}"/* "${DESTDIR}"
     fi
 
-    VER=$(git rev-parse HEAD)
-    echo "${project} ${repo}@${branch} (${VER})" >> ${DESTDIR}/versions.txt
-
-    popd
+    echo "${project} ${repo}@${branch} (${project_version})" >> ${DESTDIR}/versions.txt
 
     # whack the .la files
     find ${DESTDIR} -name "*la" -exec rm {} \;
@@ -100,4 +146,3 @@ rm -rf "${DESTDIR}/init"
 [ -d "${PROFILE}/init" ] && cp -a "${PROFILE}/init" "${DESTDIR}"
 
 tar -C ${TEMPDIR} -czvf ${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
-
