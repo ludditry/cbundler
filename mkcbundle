@@ -3,6 +3,8 @@
 set -e
 set -u
 
+NOCLEAN=0
+
 function on_exit() {
     [ -e ${TEMPDIR} ] && rm -rf ${TEMPDIR}
 }
@@ -13,6 +15,8 @@ function usage() {
     echo "Valid args:"
     echo " -p <profile>    use a specific profile directory"
     echo " -v <version>    use a specific version (default to date)"
+    echo " -b <dir>        use a specific build directory (default: mktemp)"
+    echo " -n              don't clean the build dir"
     echo
 }
 
@@ -38,13 +42,19 @@ function get_sha_for_checkout() {
 PROFILE=""
 BUILD_NUMBER=$(date +%Y%m%d%H%M)
 
-while getopts "p:v:" OPTION; do
+while getopts "p:v:nb:" OPTION; do
     case ${OPTION} in
         p)
             PROFILE=${OPTARG}
             ;;
         v)
             BUILD_NUMBER=${OPTARG}
+            ;;
+        n)
+            NOCLEAN=1
+            ;;
+        b)
+            TEMPDIR=${OPTARG}
             ;;
         ?)
             usage
@@ -62,24 +72,37 @@ if [ ! -f ${PROFILE}/manifest.txt ]; then
     exit 1
 fi
 
-TEMPDIR=$(mktemp -d --tmpdir bundler-XXXXXXXXXXX)
-trap on_exit exit
+TEMPDIR=${TEMPDIR:-$(mktemp -d --tmpdir bundler-XXXXXXXXXXX)}
+if [ "${NOCLEAN}" -eq 0 ]; then
+    trap on_exit exit
+fi
 
 mkdir -p .cache
 CACHE_ROOT=$(readlink -f .cache)
 
 DESTDIR=${TEMPDIR}/${PROFILE}-${BUILD_NUMBER}
+REAL_DESTDIR=${DESTDIR}
 mkdir -p ${DESTDIR}
 OLD_PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}
 export PKG_CONFIG_PATH=${DESTDIR}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
 PATH=${DESTDIR}/bin:${PATH}
+export LD_LIBRARY_PATH=${DESTDIR}/lib
 
 while read repo branch; do
-    project=$(basename ${repo})
+    if [[ "$repo" =~ "git+" ]]; then
+        repo_type=GIT
+        project=$(basename ${repo})
+        repo=${repo#git+}
+    else
+        repo_type=TAR
+        project=$(basename ${repo})
+        project=${project%-*}
+        project_version=${branch}
+    fi
+
     echo -e "\n######################################################"
     echo "Building ${project}"
     echo -e "######################################################\n"
-
 
     CACHEDIR=${CACHE_ROOT}/${project}
     cached_project_version=0
@@ -88,45 +111,83 @@ while read repo branch; do
         cached_project_version=$(cat ${CACHEDIR}/${project}-version.txt)
     fi
 
-    project_version=$(get_sha_for_checkout "${repo}" "${branch}")
+    if [ "${repo_type}" == "GIT" ]; then
+        project_version=$(get_sha_for_checkout "${repo}" "${branch}")
 
-    if [ "${project_version}" == "" ]; then
-        echo "can't get sha for ${repo}@${branch}"
-        exit 1
+        if [ "${project_version}" == "" ]; then
+            echo "can't get sha for ${repo}@${branch}"
+            exit 1
+        fi
     fi
 
     if [ "${project_version}" != "${cached_project_version}" ]; then
         rm -rf ${CACHEDIR}
         mkdir -p ${CACHEDIR}
 
-        # checkout
         build_script=''
         if [ -f ${PROFILE}/build/${project}.build ]; then
             build_script=$(readlink -f ${PROFILE}/build/${project}.build)
         fi
 
-        git clone ${repo} ${TEMPDIR}/${project}
-        pushd ${TEMPDIR}/${project}
-        git checkout ${project_version}
+        install_script=''
+        if [ -f ${PROFILE}/build/${project}.install ]; then
+            install_script=$(readlink -f ${PROFILE}/build/${project}.install)
+        fi
+
+
+        # checkout
+        if [ "${repo_type}" == "TAR" ]; then
+            wget -O ${TEMPDIR}/${project}.tar.gz ${repo}
+            mkdir -p ${TEMPDIR}/${project}
+            tar -C ${TEMPDIR}/${project} --strip-components=1 -xzvf ${TEMPDIR}/${project}.tar.gz
+            pushd ${TEMPDIR}/${project}
+        elif [ "${repo_type}" == "GIT" ]; then
+            if [ -d ${TEMPDIR}/${project} ]; then
+                pushd ${TEMPDIR}/${project}
+                git reset --hard
+                git checkout master
+                git pull
+            else
+                git clone ${repo} ${TEMPDIR}/${project}
+                pushd ${TEMPDIR}/${project}
+            fi
+            git checkout ${project_version}
+        fi
 
         # build and stage into cache dir
         if [ "${build_script}" != "" ]; then
+            echo "### Building using supplied build script"
             source "${build_script}"
         else
-            if [ -x autogen.sh ]; then
-                ./autogen.sh
-            else
-                autoreconf -fi
+            echo "### Building using existing autoconf framework"
+            if [ ! -x configure ]; then
+                if [ -x autogen.sh ]; then
+                    ./autogen.sh
+                else
+                    autoreconf -fi
+                fi
             fi
 
             ./configure CFLAGS=-I${DESTDIR}/include LDFLAGS=-L${DESTDIR}/lib --prefix=''
             make V=1
             # make check
+        fi
+
+        if [ "${install_script}" != "" ]; then
+            DESTDIR=${DESTDIR}
+            source "${install_script}"
+            DESTDIR=${CACHEDIR}
+            source "${install_script}"
+            echo ${project_version} > ${CACHEDIR}/${project}-version.txt
+        elif [ "${build_script}" == "" ]; then
             make DESTDIR=${DESTDIR} install
             make DESTDIR=${CACHEDIR} install
-
             echo ${project_version} > ${CACHEDIR}/${project}-version.txt
         fi
+
+        DESTDIR=${REAL_DESTDIR}
+
+        # otherwise, the build script did an install and we won't do caches
         popd
     else
         # have a cached copy...
