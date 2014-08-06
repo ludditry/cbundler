@@ -88,6 +88,9 @@ export PKG_CONFIG_PATH=${DESTDIR}/lib/pkgconfig:${OLD_PKG_CONFIG_PATH}
 PATH=${DESTDIR}/bin:${PATH}
 export LD_LIBRARY_PATH=${DESTDIR}/lib
 
+exec 3>&1
+exec > >(tee -a ${DESTDIR}/build.log)
+
 while read repo branch; do
     if [[ "$repo" =~ "git+" ]]; then
         repo_type=GIT
@@ -202,8 +205,13 @@ done < <( grep -v "^#" ${PROFILE}/manifest.txt )
 
 rm -rf "${DESTDIR}/etc"
 rm -rf "${DESTDIR}/init"
+rm -f "${DESTDIR}/binfiles"
 
 [ -d "${PROFILE}/etc" ] && cp -a "${PROFILE}/etc" "${DESTDIR}"
 [ -d "${PROFILE}/init" ] && cp -a "${PROFILE}/init" "${DESTDIR}"
+[ -e "${PROFILE}/binfiles" ] && cp "${PROFILE}/binfiles" "${DESTDIR}"
 
-tar -C ${TEMPDIR} -czvf ${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}
+exec 1>&3
+exec 3>&-
+
+tar -C ${TEMPDIR} -czf ${PROFILE}-${BUILD_NUMBER}.tar.gz ${PROFILE}-${BUILD_NUMBER}

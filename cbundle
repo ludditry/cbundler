@@ -206,10 +206,17 @@ function bundle_remove_binlinks() {
     local bundle_name=$1
     local bundle_version=$2
     local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+    local binlist
 
     log "Removing symlinked binfiles"
 
-    for file in "${bundle_dir}"/bin/*; do
+    if [ -e "${bundle_dir}"/binfiles ]; then
+        binlist=$(cat "${bundle_dir}"/binfiles)
+    else
+        binlist=$(ls "${bundle_dir}"/bin/*)
+    fi
+
+    for file in ${binlist}; do
         if [ -x "${file}" ]; then
             if [ -L "/bin/$(basename ${file})" ]; then
                 log " - $(basename ${file})"
@@ -232,7 +239,11 @@ function bundle_rpathize() {
         for file in "${bundle_dir}"/${dir}/*; do
             if $(file -b ${file} | grep -q "ELF" > /dev/null 2>&1); then
                 log " - Fixing $(basename ${file})"
-                patchelf --set-rpath "${bundle_dir}/lib" "${file}"
+                if ( ldd ${file} > /dev/null 2>&1 ); then
+                    patchelf --set-rpath "${bundle_dir}/lib" "${file}"
+                else
+                    log "   - Not a dynamic executable"
+                fi
             fi
         done
     done
@@ -299,10 +310,28 @@ function bundle_install_binlinks() {
     local bundle_name=$1
     local bundle_version=$2
     local bundle_dir=$(find_basedir "${bundle_name}" "${bundle_version}")
+    local fail=0
+
+    if [ -e "${bundle_dir}"/binfiles ]; then
+        binlist=$(cat "${bundle_dir}"/binfiles)
+    else
+        binlist=$(ls "${bundle_dir}"/bin/*)
+    fi
+
+    for file in ${binlist}; do
+        if [ -x "${file}" ] && [ -e "/bin/$(basename ${file})" ]; then
+            log "file $(basename ${file}) already exists in /bin"
+            fail=1
+        fi
+    done
+
+    if [ ${fail} -eq 1 ] && [ ${FORCE} -eq 0 ]; then
+        echo "Aborting"
+        exit 1
+    fi
 
     log "Installing symlinked binfiles"
-
-    for file in "${bundle_dir}"/bin/*; do
+    for file in ${binlist}; do
         if [ -x "${file}" ]; then
             local destfile="/bin/$(basename ${file})"
 
